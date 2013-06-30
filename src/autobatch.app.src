@@ -1,0 +1,5 @@
+{application, autobatch, [
+  {description, "A library to group concurrent blocking calls into batches"},
+  {vsn, "1.0.0"},
+  {applications, [kernel, stdlib]}
+]}.
