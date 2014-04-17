@@ -11,7 +11,8 @@
 -export([start_link/2, stop/1, call/2, spawn_worker/3, wait_for_worker/2, map/3]).
 -export_type([batch_fun/0]).
 
--define(DEFAULT_TIMEOUT, infinity).
+-behaviour(gen_server).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 %% @doc A state of a batch manager.
 -record(state, {batchfun, batchstate = nostate, numactive = 1, queries = dict:new()}).
@@ -30,37 +31,40 @@
 %% @doc Starts an autobatch manager process and links to it. Takes a batch handler function and
 %%      an initial state that will be passed to the handler function along with the queries.
 %%      The BatchFun should return a pair of the resonses and a new batch state.
--spec start_link(BatchFun :: batch_fun(), State :: term()) -> BatchPid :: pid().
-start_link(BatchFun, State) ->
+-spec start_link(BatchFun :: batch_fun(), BatchState :: term()) -> BatchPid :: pid().
+start_link(BatchFun, BatchState) ->
 	{arity, 2} = erlang:fun_info(BatchFun, arity),
-	Loop = fun() -> batch_loop(#state{batchfun = BatchFun, batchstate = State}) end,
-	spawn_link(Loop).
+	State = #state{batchfun = BatchFun, batchstate = BatchState},
+	{ok, Pid} = gen_server:start_link(?MODULE, State, []),
+	Pid.
 
 %% @doc Stops the batch handler. Raises an error if there are unhandled queries or workers waiting.
--spec stop(BatchPid :: pid()) -> {ok, State :: term()}.
+-spec stop(BatchPid :: pid()) -> {ok, BatchState :: term()}.
 stop(BatchPid) ->
-	BatchPid ! {stop, self()},
-	receive {ok, BatchState} -> {ok, BatchState} end.
+	case gen_server:call(BatchPid, stop) of
+		{ok, BatchState} -> {ok, BatchState};
+		{error, batch_not_empty} -> error(batch_not_empty)
+	end.
 
 %% @doc Perform a blocking query.
 -spec call(Query :: term(), BatchPid :: pid()) -> Response :: term().
 call(Query, BatchPid) ->
-	BatchPid ! {call, self(), Query},
-	receive {response, Response} -> Response end.
+	gen_server:call(BatchPid, {call, Query}).
 
 %% @doc Makes a non-blocking call to WorkerFun(BatchPid, Input) in a new worker process and returns
 %%      its pid. To wait for and collect the result, use wait_for_worker/2.
 -spec spawn_worker(worker_fun(), Input :: [term()], BatchPid :: pid()) -> WorkerPid :: pid().
 spawn_worker(WorkerFun, Input, BatchPid) ->
-	BatchPid ! inc_active,
+	gen_server:cast(BatchPid, inc_active),
 	ParentPid = self(),
 	spawn_link(fun () -> ParentPid ! {done, self(), WorkerFun(Input, BatchPid)} end).
 
-%% @doc Blocks until the result form a worker process is available.
+%% @doc Blocks until the result form a worker process is available. The worker must be started by
+%% the same process as the one calling this function.
 -spec wait_for_worker(WorkerPid :: pid(), BatchPid :: pid()) -> Result :: term().
 wait_for_worker(WorkerPid, BatchPid) ->
 	%% start waiting = decrement the number of running workers
-	BatchPid ! dec_active,
+	gen_server:cast(BatchPid, dec_active),
 	receive
 		{done, WorkerPid, Result} ->
 			%% the child stops running and we start running again,
@@ -81,36 +85,45 @@ map(WorkerFun, Inputs, BatchPid) ->
 		WorkerPids),
 	Results.
 
+%% --- Gen_server stuff ---
+
+init(InitState) -> {ok, InitState}.
+
+handle_call(stop, _From, State = #state{queries = Q, numactive = NumActive,
+                                        batchstate = BatchState}) ->
+	case NumActive == 1 andalso dict:size(Q) == 0 of
+		true  -> {stop, normal, {ok, BatchState}, State};
+		false -> {reply, {error, batch_not_empty}, State}
+	end;
+handle_call({call, Query}, FromPid, State = #state{queries = Q, numactive = NumActive}) ->
+	Q1 = dict:store(FromPid, Query, Q),
+	State1 = State#state{queries = Q1,
+	                   numactive = NumActive - 1},
+	State2 = do_work(State1),
+	{noreply, State2}.
+
+handle_cast(inc_active, State = #state{numactive = NumActive}) ->
+	State1 = State#state{numactive = NumActive + 1},
+	{noreply, State1};
+handle_cast(dec_active, State = #state{numactive = NumActive}) ->
+	State1 = State#state{numactive = NumActive - 1},
+	State2 = do_work(State1),
+	{noreply, State2}.
+
+handle_info(_Info, State) -> {noreply, State}.
+
+terminate(_Reason, _State) -> ok.
+
+code_change(_OldVsn, State, _Extra) -> {ok, State}.
+
 %% --- Internal stuff ---
 
-%% @doc The batch handler receive loop
-batch_loop(#state{queries = Q, numactive = NumActive} = State) ->
-	receive
-		inc_active ->
-			State1 = State#state{numactive = NumActive + 1},
-			batch_loop(State1);
-		dec_active ->
-			State1 = State#state{numactive = NumActive - 1},
-			batch_handle_and_loop(State1);
-		{call, FromPid, Query} ->
-			Q1 = dict:store(FromPid, Query, Q),
-			State1 = State#state{queries   = Q1,
-			                     numactive = NumActive - 1},
-			batch_handle_and_loop(State1);
-		{stop, Pid} ->
-			case NumActive == 1 andalso dict:size(Q) == 0 of
-				true  -> Pid ! {ok, State#state.batchstate};
-				false -> error(batch_not_empty)
-			end
-	after ?DEFAULT_TIMEOUT ->
-		error(timeout)
-	end.
-
-%% @doc Executes a batch if possible and loops again.
-batch_handle_and_loop(#state{queries = Q, numactive = NumActive} = State) ->
+%% @doc Executes a batch if possible.
+-spec do_work(#state{}) -> #state{}.
+do_work(#state{queries = Q, numactive = NumActive} = State) ->
 	case NumActive == 0 andalso dict:size(Q) /= 0 of
-		true  -> batch_handle_and_loop(batch_execute(State));
-		false -> batch_loop(State)
+		true  -> batch_execute(State);
+		false -> State
 	end.
 
 %% @doc Dispatches batch query to and delegate the responses back to at each of
@@ -142,7 +155,7 @@ batch_execute(#state{queries    = Q,
 send_responses([], Q) -> Q;
 send_responses([{Pid, Response}|Responses], Q) ->
 	dict:is_key(Pid, Q) orelse error(invalid_batch_response),
-	Pid ! {response, Response},
+	gen_server:reply(Pid, Response),
 	send_responses(Responses, dict:erase(Pid, Q)).
 
 %% --- Unit tests ---
