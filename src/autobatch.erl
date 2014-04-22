@@ -8,14 +8,17 @@
 %%      batches.
 -module(autobatch).
 
--export([start_link/2, stop/1, call/2, spawn_worker/3, wait_for_worker/2, map/3]).
+-export([start_link/2, start_link/3, stop/1, call/2, spawn_worker/3, wait_for_worker/2, map/3]).
 -export_type([batch_fun/0]).
 
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
+-define(default_maxsize, infinity).
+
 %% @doc A state of a batch manager.
--record(state, {batchfun, batchstate = nostate, numactive = 1, queries = dict:new()}).
+-record(state, {batchfun, batchstate = nostate, numactive = 1, queries = dict:new(),
+                maxsize = ?default_maxsize}).
 
 %% @doc A callback function that should take a list of pids and queries along with a state and
 %%      compute the response for some or all of the queries. The batch response should be returned
@@ -28,13 +31,19 @@
 %%      it belongs to. It may return any term.
 -type worker_fun() :: fun((Args :: term(), Batch :: pid()) -> Result :: term()).
 
+%% @doc See start_link/3.
+-spec start_link(BatchFun :: batch_fun(), BatchState :: term()) -> BatchPid :: pid().
+start_link(BatchFun, BatchState) ->
+	start_link(BatchFun, BatchState, ?default_maxsize).
+
 %% @doc Starts an autobatch manager process and links to it. Takes a batch handler function and
 %%      an initial state that will be passed to the handler function along with the queries.
 %%      The BatchFun should return a pair of the resonses and a new batch state.
--spec start_link(BatchFun :: batch_fun(), BatchState :: term()) -> BatchPid :: pid().
-start_link(BatchFun, BatchState) ->
+-spec start_link(BatchFun :: batch_fun(), BatchState :: term(), MaxBatchSize :: integer()) ->
+	BatchPid :: pid().
+start_link(BatchFun, BatchState, MaxBatchSize) ->
 	{arity, 2} = erlang:fun_info(BatchFun, arity),
-	State = #state{batchfun = BatchFun, batchstate = BatchState},
+	State = #state{batchfun = BatchFun, batchstate = BatchState, maxsize = MaxBatchSize},
 	{ok, Pid} = gen_server:start_link(?MODULE, State, []),
 	Pid.
 
@@ -120,10 +129,13 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 %% @doc Executes a batch if possible.
 -spec do_work(#state{}) -> #state{}.
-do_work(#state{queries = Q, numactive = NumActive} = State) ->
-	case NumActive == 0 andalso dict:size(Q) /= 0 of
-		true  -> batch_execute(State);
-		false -> State
+do_work(#state{queries = Queries, numactive = NumActive, maxsize = MaxSize} = State) ->
+    InQueue = dict:size(Queries),
+    if
+        NumActive == 0, InQueue /= 0;
+        MaxSize /= infinity, InQueue >= MaxSize ->
+            batch_execute(State);
+		true -> State
 	end.
 
 %% @doc Dispatches batch query to and delegate the responses back to at each of
@@ -175,14 +187,35 @@ autobatch_test() ->
 	],
 
 	%% Do it in a batch.
-	Batch = autobatch:start_link(fun my_batch_fun/2, []),
-	Cars = autobatch:call(get_cars, Batch),
+	BatchMgr = autobatch:start_link(fun my_batch_fun/2, []),
+	Cars = autobatch:call(get_cars, BatchMgr),
 	ExpectedResults = autobatch:map(
-		fun (Car, Batch0) -> {Car, autobatch:call({get_origin, Car}, Batch0)} end,
+		fun (Car, BatchMgr0) -> {Car, autobatch:call({get_origin, Car}, BatchMgr0)} end,
 		Cars,
-		Batch
+		BatchMgr
 	),
-	{ok, ExpectedBatches} = autobatch:stop(Batch).
+	{ok, ExpectedBatches} = autobatch:stop(BatchMgr).
+
+maxsize_test() ->
+	%% The same as above but with batches of maxsize = 2.
+
+	%% The expected results. We build it here without the batch stuff.
+	ExpectedResults = lists:map(fun (Car) -> {Car, my_query({get_origin, Car})} end,
+	                            my_query(get_cars)),
+	%% Batch queries in reverse order
+	ExpectedBatches = [
+		[{get_origin, fiat}],
+		[{get_origin, bmw}, {get_origin, skoda}],
+		[get_cars]
+	],
+	BatchMgr = autobatch:start_link(fun my_batch_fun/2, [], 2),
+	Cars = autobatch:call(get_cars, BatchMgr),
+	ExpectedResults = autobatch:map(
+		fun (Car, BatchMgr0) -> {Car, autobatch:call({get_origin, Car}, BatchMgr0)} end,
+		Cars,
+		BatchMgr
+	),
+	{ok, ExpectedBatches} = autobatch:stop(BatchMgr).
 
 %% Test helpers
 my_batch_fun(Queries, OldQueryList) ->
