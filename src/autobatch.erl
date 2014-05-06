@@ -8,7 +8,8 @@
 %%      batches.
 -module(autobatch).
 
--export([start_link/2, start_link/3, stop/1, call/2, spawn_worker/3, wait_for_worker/2, map/3]).
+-export([start_link/2, start_link/3, stop/1, call/2, call/3, spawn_worker/3, wait_for_worker/2,
+         map/3]).
 -export_type([batch_fun/0]).
 
 -behaviour(gen_server).
@@ -66,6 +67,12 @@ stop(BatchPid) ->
 -spec call(Query :: term(), BatchPid :: pid()) -> Response :: term().
 call(Query, BatchPid) ->
 	gen_server:call(BatchPid, {call, Query}).
+
+%% @doc Perform a blocking query with a custom timeout.
+-spec call(Query :: term(), BatchPid :: pid(), Timeout :: integer() | infinity) ->
+    Response :: term().
+call(Query, BatchPid, Timeout) ->
+	gen_server:call(BatchPid, {call, Query}, Timeout).
 
 %% @doc Makes a non-blocking call to WorkerFun(BatchPid, Input) in a new worker process and returns
 %%      its pid. To wait for and collect the result, use wait_for_worker/2.

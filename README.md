@@ -59,6 +59,7 @@ error if there are any workers still running or waiting.
 
 ```Erlang
 call(Query :: term(), BatchPid :: pid()) -> Response :: term()
+call(Query :: term(), BatchPid :: pid(), Timeout :: integer() | infinity) -> Response :: term()
 ```
 Perform a blocking query.
 
