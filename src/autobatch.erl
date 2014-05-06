@@ -34,16 +34,23 @@
 %% @doc See start_link/3.
 -spec start_link(BatchFun :: batch_fun(), BatchState :: term()) -> BatchPid :: pid().
 start_link(BatchFun, BatchState) ->
-	start_link(BatchFun, BatchState, ?default_maxsize).
+	start_link(BatchFun, BatchState, []).
 
 %% @doc Starts an autobatch manager process and links to it. Takes a batch handler function and
 %%      an initial state that will be passed to the handler function along with the queries.
 %%      The BatchFun should return a pair of the resonses and a new batch state.
--spec start_link(BatchFun :: batch_fun(), BatchState :: term(), MaxBatchSize :: integer()) ->
+-spec start_link(BatchFun :: batch_fun(), BatchState :: term(), Options :: list() | integer()) ->
 	BatchPid :: pid().
-start_link(BatchFun, BatchState, MaxBatchSize) ->
+start_link(BatchFun, BatchState, MaxBatchSize) when is_integer(MaxBatchSize) ->
+    %% Deprecated variant of start_link/3. See next function clause.
+    start_link(BatchFun, BatchState, [{maxsize, MaxBatchSize}]);
+start_link(BatchFun, BatchState, Options) when is_list(Options) ->
 	{arity, 2} = erlang:fun_info(BatchFun, arity),
-	State = #state{batchfun = BatchFun, batchstate = BatchState, maxsize = MaxBatchSize},
+	State = #state{
+	    batchfun = BatchFun,
+	    batchstate = BatchState,
+	    maxsize = proplists:get_value(maxsize, Options, ?default_maxsize)
+    },
 	{ok, Pid} = gen_server:start_link(?MODULE, State, []),
 	Pid.
 

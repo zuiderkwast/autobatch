@@ -39,11 +39,16 @@ Functions
 
 ```Erlang
 start_link(BatchFun :: batch_fun(), State :: term()) -> BatchPid :: pid()
+start_link(BatchFun :: batch_fun(), State :: term(), Options :: list()) -> BatchPid :: pid()
 ```
 
 Starts an autobatch manager process and links to it. Takes a batch handler function and
 an initial state that will be passed to the handler function along with the queries.
 The BatchFun should return a pair of the resonses and a new batch state.
+
+Options:
+
+* `{maxsize, MaxSize}`: maximum number of calls per batch
 
 ```Erlang
 stop(BatchPid :: pid()) -> {ok, State :: term()}
