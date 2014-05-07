@@ -144,11 +144,11 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %% @doc Executes a batch if possible.
 -spec do_work(#state{}) -> #state{}.
 do_work(#state{queries = Queries, numactive = NumActive, maxsize = MaxSize} = State) ->
-    InQueue = dict:size(Queries),
-    if
-        NumActive == 0, InQueue /= 0;
-        MaxSize /= infinity, InQueue >= MaxSize ->
-            batch_execute(State);
+	InQueue = dict:size(Queries),
+	if
+		NumActive == 0, InQueue /= 0;
+		MaxSize /= infinity, InQueue >= MaxSize ->
+			batch_execute(State);
 		true -> State
 	end.
 
@@ -193,13 +193,11 @@ autobatch_test() ->
 	%% The expected results. We build it here without the batch stuff.
 	ExpectedResults = lists:map(fun (Car) -> {Car, my_query({get_origin, Car})} end,
 	                            my_query(get_cars)),
-
 	%% The batches we expect (in reverse order) and their queries.
 	ExpectedBatches = [
-		[{get_origin, bmw}, {get_origin, skoda}, {get_origin, fiat}],
+		[{get_origin, bmw}, {get_origin, fiat}, {get_origin, skoda}],
 		[get_cars]
 	],
-
 	%% Do it in a batch.
 	BatchMgr = autobatch:start_link(fun my_batch_fun/2, []),
 	Cars = autobatch:call(get_cars, BatchMgr),
@@ -208,7 +206,7 @@ autobatch_test() ->
 		Cars,
 		BatchMgr
 	),
-	{ok, ExpectedBatches} = autobatch:stop(BatchMgr).
+	?assertEqual({ok, ExpectedBatches}, autobatch:stop(BatchMgr)).
 
 maxsize_test() ->
 	%% The same as above but with batches of maxsize = 2.
@@ -229,20 +227,29 @@ maxsize_test() ->
 		Cars,
 		BatchMgr
 	),
-	{ok, ExpectedBatches} = autobatch:stop(BatchMgr).
+	?assertEqual({ok, ExpectedBatches}, autobatch:stop(BatchMgr)).
+
+timeout_test() ->
+	BatchMgr = autobatch:start_link(fun slow_batch_fun/2, []),
+	?assertExit({timeout, _}, autobatch:call(get_cars, BatchMgr, 10)),
+	?assertMatch({ok, _}, autobatch:stop(BatchMgr)).
 
 %% Test helpers
 my_batch_fun(Queries, OldQueryList) ->
 	%% Dump the queries
-	QueriesOnly = lists:map(fun ({_, Query}) -> Query end, Queries),
+	QueriesOnly = lists:sort([Query || {_, Query} <- Queries]),
 
 	%% Simulate batch call
-	Responses = lists:map(fun ({Pid, Query}) -> {Pid, my_query(Query)} end, Queries),
+	Responses = [{Pid, my_query(Query)} || {Pid, Query} <- Queries],
 	{Responses, [QueriesOnly | OldQueryList]}.
 
 my_query(get_cars)            -> [bmw, skoda, fiat];
 my_query({get_origin, bmw})   -> germany;
 my_query({get_origin, skoda}) -> czech_rep;
 my_query({get_origin, fiat})  -> italy.
+
+slow_batch_fun(Queries, State) ->
+	receive after 1000 -> ok end,
+	my_batch_fun(Queries, State).
 
 -endif.
