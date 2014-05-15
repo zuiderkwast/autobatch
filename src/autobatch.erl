@@ -21,6 +21,8 @@
 -record(state, {batchfun, batchstate = nostate, numactive = 1, queries = dict:new(),
                 maxsize = ?default_maxsize}).
 
+-include_lib("eunit/include/eunit.hrl").
+
 %% @doc A callback function that should take a list of pids and queries along with a state and
 %%      compute the response for some or all of the queries. The batch response should be returned
 %%      in the same form, i.e. as a list of pairs with the pid and the response of its query, along
@@ -43,15 +45,15 @@ start_link(BatchFun, BatchState) ->
 -spec start_link(BatchFun :: batch_fun(), BatchState :: term(), Options :: list() | integer()) ->
 	BatchPid :: pid().
 start_link(BatchFun, BatchState, MaxBatchSize) when is_integer(MaxBatchSize) ->
-    %% Deprecated variant of start_link/3. See next function clause.
-    start_link(BatchFun, BatchState, [{maxsize, MaxBatchSize}]);
+	%% Deprecated variant of start_link/3. See next function clause.
+	start_link(BatchFun, BatchState, [{maxsize, MaxBatchSize}]);
 start_link(BatchFun, BatchState, Options) when is_list(Options) ->
 	{arity, 2} = erlang:fun_info(BatchFun, arity),
 	State = #state{
 	    batchfun = BatchFun,
 	    batchstate = BatchState,
 	    maxsize = proplists:get_value(maxsize, Options, ?default_maxsize)
-    },
+	},
 	{ok, Pid} = gen_server:start_link(?MODULE, State, []),
 	Pid.
 
@@ -70,7 +72,7 @@ call(Query, BatchPid) ->
 
 %% @doc Perform a blocking query with a custom timeout.
 -spec call(Query :: term(), BatchPid :: pid(), Timeout :: integer() | infinity) ->
-    Response :: term().
+	Response :: term().
 call(Query, BatchPid, Timeout) ->
 	gen_server:call(BatchPid, {call, Query}, Timeout).
 
@@ -80,7 +82,13 @@ call(Query, BatchPid, Timeout) ->
 spawn_worker(WorkerFun, Input, BatchPid) ->
 	gen_server:cast(BatchPid, inc_active),
 	ParentPid = self(),
-	spawn_link(fun () -> ParentPid ! {done, self(), WorkerFun(Input, BatchPid)} end).
+	spawn_link(
+		fun () ->
+			Ret = WorkerFun(Input, BatchPid),
+			gen_server:cast(BatchPid, dec_active),
+			ParentPid ! {done, self(), Ret}
+		end
+	).
 
 %% @doc Blocks until the result form a worker process is available. The worker must be started by
 %% the same process as the one calling this function.
@@ -92,6 +100,7 @@ wait_for_worker(WorkerPid, BatchPid) ->
 		{done, WorkerPid, Result} ->
 			%% the child stops running and we start running again,
 			%% i.e. no change in the number of running workers
+			gen_server:cast(BatchPid, inc_active),
 			Result
 	end.
 
@@ -113,7 +122,7 @@ map(WorkerFun, Inputs, BatchPid) ->
 init(InitState) -> {ok, InitState}.
 
 handle_call(stop, _From, State = #state{queries = Q, numactive = NumActive,
-                                        batchstate = BatchState}) ->
+	                                    batchstate = BatchState}) ->
 	case NumActive == 1 andalso dict:size(Q) == 0 of
 		true  -> {stop, normal, {ok, BatchState}, State};
 		false -> {reply, {error, batch_not_empty}, State}
@@ -121,7 +130,7 @@ handle_call(stop, _From, State = #state{queries = Q, numactive = NumActive,
 handle_call({call, Query}, FromPid, State = #state{queries = Q, numactive = NumActive}) ->
 	Q1 = dict:store(FromPid, Query, Q),
 	State1 = State#state{queries = Q1,
-	                   numactive = NumActive - 1},
+	                     numactive = NumActive - 1},
 	State2 = do_work(State1),
 	{noreply, State2}.
 

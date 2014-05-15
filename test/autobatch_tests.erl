@@ -17,7 +17,7 @@ autobatch_test() ->
 	ExpectedResults = get_origin_of_each_vechicle(Cars, BatchMgr),
 	?assertEqual({ok, ExpectedBatches}, autobatch:stop(BatchMgr)).
 
-maxsize_testx() ->
+maxsize_test() ->
 	%% The same as above but with batches of maxsize = 2.
 
 	%% The expected results. We build it here without the batch stuff.
@@ -34,14 +34,14 @@ maxsize_testx() ->
 	ExpectedResults = get_origin_of_each_vechicle(Cars, BatchMgr),
 	?assertEqual({ok, ExpectedBatches}, autobatch:stop(BatchMgr)).
 
-timeout_testx() ->
+timeout_test() ->
 	BatchMgr = autobatch:start_link(fun slow_batch_fun/2, []),
 	?assertExit({timeout, _}, autobatch:call(get_cars, BatchMgr, 10)),
 	?assertMatch({ok, _}, autobatch:stop(BatchMgr)).
 
 multilevel_test() ->
 	BatchMgr = autobatch:start_link(fun my_batch_fun/2, [], 2),
-	VehicleGetters = [get_cars, get_ufos],
+	VehicleGetters = [get_cars, get_bicycles, get_ufos],
 	Result = autobatch:map(
 		fun (VehicleGetter, BatchMgr0) ->
 			Vehicles = autobatch:call(VehicleGetter, BatchMgr0),
@@ -72,6 +72,9 @@ get_origin_of_each_vechicle(Vehicles, BatchMgr) ->
 my_batch_fun(Queries, OldQueryList) ->
 	%% Dump the queries
 	QueriesOnly = lists:sort([Query || {_, Query} <- Queries]),
+
+    %% Some delay for debugging
+    receive after 10 -> ok end,
 
 	%% Simulate batch call
 	Responses = [{Pid, my_query(Query)} || {Pid, Query} <- Queries],
