@@ -58,6 +58,23 @@ multilevel_test() ->
 	?assertEqual(ExpectedResult, Result),
 	?assertMatch({ok, _Batches}, autobatch:stop(BatchMgr)).
 
+dont_wait_for_me_test() ->
+	BatchMgr = autobatch:start_link(fun my_batch_fun/2, []),
+	SlowJobFun = fun () -> receive fast_job_done -> ok end end,
+	SlowWorkerPid = autobatch:spawn_worker(
+	    fun (dummy, BatchMgr1) -> autobatch:dont_wait_for_me(SlowJobFun, BatchMgr1) end,
+	    dummy, BatchMgr
+    ),
+	FastWorkerPid = autobatch:spawn_worker(
+	    fun (dummy, BatchMgr1) -> Result = autobatch:call(get_cars, BatchMgr1),
+	                              SlowWorkerPid ! fast_job_done,
+	                              Result end,
+        dummy, BatchMgr
+    ),
+	ok = autobatch:wait_for_worker(SlowWorkerPid, BatchMgr),
+	[bmw, skoda, fiat] = autobatch:wait_for_worker(FastWorkerPid, BatchMgr),
+	?assertMatch({ok, _}, autobatch:stop(BatchMgr)).
+
 %% Helpers
 %% -------
 

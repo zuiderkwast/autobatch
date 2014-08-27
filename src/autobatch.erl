@@ -9,7 +9,7 @@
 -module(autobatch).
 
 -export([start_link/2, start_link/3, stop/1, call/2, call/3, spawn_worker/3, wait_for_worker/2,
-         map/3]).
+         map/3, dont_wait_for_me/2]).
 -export_type([batch_fun/0]).
 
 -behaviour(gen_server).
@@ -116,6 +116,14 @@ map(WorkerFun, Inputs, BatchPid) ->
 		fun (WorkerPid) -> wait_for_worker(WorkerPid, BatchPid) end,
 		WorkerPids),
 	Results.
+
+%% @doc This function allows a worker run a slow, long-running job while not forcing the other
+%% workers to wait for it.
+dont_wait_for_me(SlowJobFun, BatchPid) ->
+    gen_server:cast(BatchPid, dec_active),
+    Result = SlowJobFun(),
+    gen_server:cast(BatchPid, inc_active),
+    Result.
 
 %% --- Gen_server stuff ---
 
