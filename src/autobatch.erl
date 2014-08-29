@@ -121,9 +121,11 @@ map(WorkerFun, Inputs, BatchPid) ->
 %% workers to wait for it.
 dont_wait_for_me(SlowJobFun, BatchPid) ->
     gen_server:cast(BatchPid, dec_active),
-    Result = SlowJobFun(),
-    gen_server:cast(BatchPid, inc_active),
-    Result.
+    try
+        SlowJobFun()
+    after
+        gen_server:cast(BatchPid, inc_active)
+    end.
 
 %% --- Gen_server stuff ---
 
